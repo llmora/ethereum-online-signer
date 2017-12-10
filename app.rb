@@ -4,122 +4,149 @@ require 'io/console'
 require 'eth'
 require 'rest-client'
 
-key = nil
+# Monkey patch so we can get the passphrase from the console with "no echo"
 
-default_options = {
-  :transfer_limit_wei => 0,
-  :source => nil,
-  :destinations => [],
-  :keyfile => nil,
-  :gas_price => 41_000_000_000,
-  :etherscan_api_token => ''
-}
-
-def config_error(message)
-  fail message
+class IO
+  def get_passphrase
+    sysread(256, EthereumSignerApp::key_passphrase)
+  end
 end
 
-configure do
+class EthereumSignerApp < Sinatra::Base
+  register Sinatra::ConfigFile
+  
+  @@key_passphrase = ""
+  @@key = nil
 
-  default_options.each do |k, v|
-    set k, v
+  default_options = {
+    :transfer_limit_wei => 0,
+    :source => nil,
+    :destinations => [],
+    :keyfile => nil,
+    :gas_price => 41_000_000_000,
+    :etherscan_api_token => ''
+  }
+
+  def self.key_passphrase
+    @@key_passphrase
+  end
+  
+  def config_error(message)
+    fail message
+  end
+  
+  def key_unlocked?
+    @@key != nil
+  end
+  
+  configure do
+
+    # Load configuration settings
+    default_options.each do |k, v|
+      set k, v
+    end
+
+    config_file "settings.yml"
+
+    # Check all configuration parameters are set
+    config_error("You must specify a keyfile") if ! settings.keyfile
+    config_error("You must specify a source ETH address") if ! settings.source
+    config_error("You must specify a list of allowed destinations") if settings.destinations.length == 0
+    config_error("You must specify a maximum wei transfer limit") if settings.transfer_limit_wei == 0
+
+    # Unlock key through console
+    loop do
+      print "[$0] Enter passphrase to unlock key '#{settings.keyfile}': "
+      STDOUT.flush
+      STDIN.noecho(&:get_passphrase)
+      
+      begin
+        @@key = Eth::Key.decrypt File.read(settings.keyfile), @@key_passphrase.chomp
+      rescue Exception => e
+        puts e.message
+      end
+
+      # Securely read the passphrase and wipe it after use (https://bugs.ruby-lang.org/issues/5741) - you would thing IO#getpass would do this for you
+      io = StringIO.new("\0" * @@key_passphrase.bytesize)
+      io.read(@@key_passphrase.bytesize, @@key_passphrase)
+
+      break if @@key
+    end
+
   end
 
-  config_file "settings.yml"
 
-  # Check all configuration parameters are set
-  config_error("You must specify a keyfile") if ! settings.keyfile
-  config_error("You must specify a source ETH address") if ! settings.source
-  config_error("You must specify a list of allowed destinations") if settings.destinations.length == 0
-  config_error("You must specify a maximum wei transfer limit") if settings.transfer_limit_wei == 0
+  get '/status' do
+    http_error("Key is locked, something went really wrong", 500) unless key_unlocked?
+    http_response("Key is unlocked, ready to proceed")
+  end
 
-  # Load key
-  loop do
-    key_passphrase = STDIN.getpass("[transeth] Enter passphrase to unlock key '#{settings.keyfile}': ")  
+  post '/sign' do
+    content_type 'application/json'
 
     begin
-      key = Eth::Key.decrypt File.read(settings.keyfile), key_passphrase
-    rescue Exception => e
-      puts e.message
+      data = JSON.parse(request.body.read, symbolize_names: true)
+    rescue JSON::ParserError => e
+      http_error("Malformed JSON request: #{e}")
     end
 
-    break if key
-  end
+    if data
+      http_error("Invalid request, missing destination") unless data.key?(:destination)
+      http_error("Invalid request, missing wei") unless data.key?(:wei)
 
-end
+      # Get destination and amount
+      destination = data[:destination]
+      wei = data[:wei].to_i
 
-get '/status' do
-  halt 500 if ! key
-  "OK"
-end
+      # Check that destination is an address and is in our whitelist
+      http_error("Transfers to #{destination} are not allowed") if ! settings.destinations.include? destination
 
-post '/sign' do
-  content_type 'application/json'
+      # Check the amount requested is not above the transfer
+      http_error("Amount cannot exceed #{settings.transfer_limit_wei} wei") if wei > settings.transfer_limit_wei
 
-  begin
-    data = JSON.parse(request.body.read, symbolize_names: true)
-  rescue JSON::ParserError => e
-    http_error("Malformed JSON request: #{e}")
-  end
+      # Get nonce
+      nonce = nonce(settings.source) || http_error("Error retrieving nonce", 500)
+      
+      # Sign transaction
+      tx = Eth::Tx.new({
+        data: '',
+        gas_limit: 21_000,
+        gas_price: settings.gas_price,
+        nonce: nonce,
+        to: destination, # key2.address,
+        value: wei
+      })
 
-  if data
-    http_error("Invalid request, missing destination") unless data.key?(:destination)
-    http_error("Invalid request, missing wei") unless data.key?(:wei)
+      tx.sign @@key
 
-    # Get destination and amount
-    destination = data[:destination]
-    wei = data[:wei].to_i
-
-    # Check that destination is an address and is in our whitelist
-    http_error("Transfers to #{destination} are not allowed") if ! settings.destinations.include? destination
-
-    # Check the amount requested is not above the transfer
-    http_error("Amount cannot exceed #{settings.transfer_limit_wei} wei") if wei > settings.transfer_limit_wei
-
-    # Get nonce
-    nonce = nonce(settings.source) || http_error("Error retrieving nonce", 500)
-    
-    # Sign transaction
-    tx = Eth::Tx.new({
-      data: '',
-      gas_limit: 21_000,
-      gas_price: settings.gas_price,
-      nonce: nonce,
-      to: destination, # key2.address,
-      value: wei
-    })
-
-    tx.sign key
-
-    http_response({transaction: tx.hex, hash: tx.hash}, 200, "Transaction successfully signed")
-  else
-    http_error("Invalid request")
-  end
-
-
-end
-
-
-
-def nonce(address)
-  response = RestClient.get('http://api.etherscan.io/api', { params: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}})
-
-  if response.code == 200 then
-    api_response = JSON.parse(response, :symbolize_names => true)
-
-    if api_response[:jsonrpc] == "2.0" then
-      return api_response[:result].to_i(16)# convert_base(16, 10) # 1000000000000000000
+      http_response({transaction: tx.hex, hash: tx.hash}, 200, "Transaction successfully signed")
+    else
+      http_error("Invalid request")
     end
-
-  else
-    logger.error "Etherscan API returned non-200 response code for 'eth_getTransactionCount': #{response.code}"
   end
+
+  def nonce(address)
+    response = RestClient.get('http://api.etherscan.io/api', { params: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}})
+
+    if response.code == 200 then
+      api_response = JSON.parse(response, :symbolize_names => true)
+
+      if api_response[:jsonrpc] == "2.0" then
+        return api_response[:result].to_i(16)# convert_base(16, 10) # 1000000000000000000
+      end
+
+    else
+      logger.error "Etherscan API returned non-200 response code for 'eth_getTransactionCount': #{response.code}"
+    end
+  end
+
+  def http_error(message, status_code = 422)
+    halt status_code, { status: "error", message: [message]}.to_json
+  end
+
+  def http_response(data, status_code = 200, message = "Ok")
+    halt status_code, { status: "ok", message: message, data: data }.to_json
+  end
+
 end
 
-def http_error(message, status_code = 422)
-  halt status_code, { status: "error", message: [message]}.to_json
-end
-
-def http_response(data, status_code = 200, message = "Ok")
-  halt status_code, { status: "ok", message: message, data: data }.to_json
-end
