@@ -24,7 +24,8 @@ class EthereumSignerApp < Sinatra::Base
     :destinations => [],
     :keyfile => nil,
     :gas_price => 41_000_000_000,
-    :etherscan_api_token => ''
+    :etherscan_api_token => '',
+    :network => 'main'
   }
 
   def self.key_passphrase
@@ -40,13 +41,29 @@ class EthereumSignerApp < Sinatra::Base
   end
 
   def nonce(address)
-    response = RestClient.get('http://api.etherscan.io/api', { params: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}})
+  
+    api_url = nil
+  
+    case settings.network
+    when 'main'
+      api_url = 'https://api.etherscan.io'
+    when 'ropsten'
+      api_url = 'https://ropsten.etherscan.io'
+    when 'kovan'
+      api_url = 'https://kovan.etherscan.io'
+    when 'rinkeby'
+      api_url = 'https://rinkeby.etherscan.io'
+    else
+      http_error("Invalid network #{network}, please check your configuration", 500)
+    end
+  
+    response = RestClient::Request.execute(method: :get, url: "#{api_url}/api", payload: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}, ssl_ca_file: 'cacert.pem');
 
     if response.code == 200 then
       api_response = JSON.parse(response, :symbolize_names => true)
 
       if api_response[:jsonrpc] == "2.0" then
-        return api_response[:result].to_i(16)# convert_base(16, 10) # 1000000000000000000
+        return api_response[:result].to_i(16)
       end
 
     else
@@ -55,14 +72,17 @@ class EthereumSignerApp < Sinatra::Base
   end
 
   def http_error(message, status_code = 422)
-    halt status_code, { status: "error", message: [message]}.to_json
+     logger.error "Error #{status_code}: #{message}"
+     halt status_code, { status: "error", message: [message]}.to_json
   end
 
   def http_response(data, status_code = 200, message = "Ok")
+     logger.info "Response #{status_code}: #{message}"
     halt status_code, { status: "ok", message: message, data: data }.to_json
   end
   
   configure do
+    enable :logging
 
     # Load configuration settings
     default_options.each do |k, v|
@@ -79,7 +99,7 @@ class EthereumSignerApp < Sinatra::Base
 
     # Unlock key through console
     loop do
-      print "[$0] Enter passphrase to unlock key '#{settings.keyfile}': "
+      print "[signatory] Enter passphrase to unlock key '#{settings.keyfile}': "
       STDOUT.flush
       STDIN.noecho(&:get_passphrase)
       
@@ -138,7 +158,7 @@ class EthereumSignerApp < Sinatra::Base
         gas_limit: 21_000,
         gas_price: settings.gas_price,
         nonce: nonce,
-        to: destination, # key2.address,
+        to: destination,
         value: wei
       })
 
@@ -150,6 +170,4 @@ class EthereumSignerApp < Sinatra::Base
     end
   end
 
-
 end
-
