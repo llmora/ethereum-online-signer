@@ -69,7 +69,7 @@ class EthereumSignerApp < Sinatra::Base
       set k, v
     end
 
-    config_file "settings.yml"
+    config_file "config/settings.yml"
 
     # Check all configuration parameters are set
     config_error("You must specify a keyfile") if ! settings.keyfile
