@@ -140,3 +140,8 @@ Risk assessment
 ---------------
 
 To be completed...
+
+License
+-------
+
+signatory is released as open source under an "MIT License"(http://opensource.org/licenses/MIT)
