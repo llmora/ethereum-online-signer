@@ -14,6 +14,7 @@ Installation
 ------------
 ```
 $ git clone https://github.com/llmora/ethereum-online-signer
+$ cd ethereum-online-signer
 $ bundle install
 ```
 
