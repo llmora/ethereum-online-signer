@@ -31,7 +31,7 @@ class EthereumSignerApp < Sinatra::Base
     @@key_passphrase
   end
   
-  def config_error(message)
+  def self.config_error(message)
     fail message
   end
   
