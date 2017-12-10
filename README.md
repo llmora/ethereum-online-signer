@@ -10,6 +10,20 @@ Functionality
 * Configurable maximum amount of ETH to accept transfers
 * Configurable list of destinations, so that ETH cannot be transferred to other addresses
 
+Installation
+------------
+```
+$ git clone https://github.com/llmora/ethereum-online-signer
+$ bundle install
+```
+
+Running
+-------
+
+```
+$ bundle exec rackup config.ru
+```
+
 Configuration
 -------------
 
@@ -32,6 +46,5 @@ An example content of `settings.yml`:
 
 TODO
 ----
-* Verify key is unlocked before signing
 * Create docker image for ease of deployment
 * Write down threat analysis

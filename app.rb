@@ -38,6 +38,29 @@ class EthereumSignerApp < Sinatra::Base
   def key_unlocked?
     @@key != nil
   end
+
+  def nonce(address)
+    response = RestClient.get('http://api.etherscan.io/api', { params: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}})
+
+    if response.code == 200 then
+      api_response = JSON.parse(response, :symbolize_names => true)
+
+      if api_response[:jsonrpc] == "2.0" then
+        return api_response[:result].to_i(16)# convert_base(16, 10) # 1000000000000000000
+      end
+
+    else
+      logger.error "Etherscan API returned non-200 response code for 'eth_getTransactionCount': #{response.code}"
+    end
+  end
+
+  def http_error(message, status_code = 422)
+    halt status_code, { status: "error", message: [message]}.to_json
+  end
+
+  def http_response(data, status_code = 200, message = "Ok")
+    halt status_code, { status: "ok", message: message, data: data }.to_json
+  end
   
   configure do
 
@@ -72,17 +95,19 @@ class EthereumSignerApp < Sinatra::Base
 
       break if @@key
     end
-
   end
 
-
+  before do
+    content_type 'application/json'
+  end
+  
   get '/status' do
     http_error("Key is locked, something went really wrong", 500) unless key_unlocked?
     http_response("Key is unlocked, ready to proceed")
   end
 
   post '/sign' do
-    content_type 'application/json'
+    http_error("Key is locked, something went really wrong", 500) unless key_unlocked?
 
     begin
       data = JSON.parse(request.body.read, symbolize_names: true)
@@ -125,28 +150,6 @@ class EthereumSignerApp < Sinatra::Base
     end
   end
 
-  def nonce(address)
-    response = RestClient.get('http://api.etherscan.io/api', { params: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}})
-
-    if response.code == 200 then
-      api_response = JSON.parse(response, :symbolize_names => true)
-
-      if api_response[:jsonrpc] == "2.0" then
-        return api_response[:result].to_i(16)# convert_base(16, 10) # 1000000000000000000
-      end
-
-    else
-      logger.error "Etherscan API returned non-200 response code for 'eth_getTransactionCount': #{response.code}"
-    end
-  end
-
-  def http_error(message, status_code = 422)
-    halt status_code, { status: "error", message: [message]}.to_json
-  end
-
-  def http_response(data, status_code = 200, message = "Ok")
-    halt status_code, { status: "ok", message: message, data: data }.to_json
-  end
 
 end
 
