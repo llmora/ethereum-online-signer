@@ -56,8 +56,8 @@ class EthereumSignerApp < Sinatra::Base
     else
       http_error("Invalid network #{network}, please check your configuration", 500)
     end
-  
-    response = RestClient::Request.execute(method: :get, url: "#{api_url}/api", payload: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}, ssl_ca_file: 'cacert.pem');
+
+    response = RestClient::Request.execute(method: :get, url: "#{api_url}/api", payload: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}, ssl_ca_file: 'cacert.pem') { |response, request, result| response }
 
     if response.code == 200 then
       api_response = JSON.parse(response, :symbolize_names => true)
