@@ -27,15 +27,14 @@ hinders smaller transactions that happen very often.
 The "Risk assessment" section at the end of this document explains the
 threats  to the private key and the controls implemented by signatory to
 reduce the risk of a compromise. If you think the application can be
-improved in any way, just submit a PR please.
+improved in any way, just submit a pull request please.
 
 **Signatory key functionalities**
 
   - HTTP-based API, for ease of integration with client applications
   - Key password is not stored on disk, requires manual input on startup
   - Configurable maximum amount of ETH to accept transfers for
-  - Configurable list of destinations, so that ETH cannot be transferred to
-    unknown addresses
+  - Configurable list of destinations, so that ETH cannot be transferred to unknown addresses
 
 Installation
 ------------
@@ -106,9 +105,9 @@ signatory exposes two methods over the API:
 
     Response: If the server is ready a status of "ok" is sent, otherwise an "error" along with an explanation in "message" is presented.
 
-  `/sign`: Accessible over POST, it finds the next nonce for the transaction, signs it with the configured key and returns the content of the transaction.
+  `/sign`: Accessible over POST, signs a transaction with the configured key and returns it.
 
-    Request: Accepts two parameters in JSON: "destination" is the address that the transfer will go to and "amount" is the value in wei that you want to transfer. 
+    Request: Accepts three parameters in JSON: "destination" is the address that the transfer will go to, "amount" is the value in wei that you want to transfer and "nonce" is the nonce to use for the transaction.
 
     Response: If the transfer is successful a status of "ok" is sent and the "data" portion of the response contains two keys: "transaction" with the hex representation of the transaction and "hash", the hash of the transaction, ready to be submitted to the nextwork through your local node or using one of the "pushTx" services.
 
@@ -139,9 +138,69 @@ passphrase and hit enter).
 Risk assessment
 ---------------
 
-To be completed...
+`signatory` attempts to be as secure as possible, the following risks have been identified that may impact the security of the application (pull requests welcome to identify additional threats and improve the current controls):
+
+**The wallet private key is stolen after a break-in to the server running signatory**
+
+`signatory` checks that the key is encrypted on disk (R1) and refuses to start otherwise.
+
+Controls not yet implemented:
+
+   - Memory dump can extract decrypted private key
+   - Debugger can extract decrypted private key
+
+**The wallet passphrase is stolen after a break-in on the server running signatory**
+
+The key must be fed using a TTY on start-up, the passphrase will only be read from a TTY so if the user attempts to fed it through stdin the application will refuse to start (R6).
+
+In addition, just in case the user fakes a TTY, a further check is conducted to ensure that there is a delay between application startup and the key being entered (R5) to avoid the key being store on disk.
+
+After the key is unlocked the passphrase is wiped from memory as soon as possible, to avoid a memory dump from showing the passphrase (R2).
+
+We considered using a HTTP request to unlock the key, but the amount of copies of data that would be laying around memory put us off.
+
+**An attacker abuses the signing interface to transfer money to their wallet**
+
+The configuration file (which can only be remotely modified through the application) holds a list of allowed destination wallet addresses (parameter *destination*), so that only trusted wallets can receive the transactions (R3).
+
+The amount of currency that can be transferred is capped through the *transfer_limit_wei* configuration setting (R4).
+
+**The application gets replaced by a fake application that mimics the TTY prompt and tricks the user into entering the passphrase on start-up**
+
+Controls not yet implemented:
+
+`signatory` must demonstrate that it has access to something the attacker does not - but because at this stage the key is still locked we cannot use a key signature to demonstrate the application is legitimate. There is no other property that we can use, so it is not possible to have the application authenticate itself - we must fall back to external verification methods that the attacker would not have subverted.
+
+Also if the attacker is able to modify the application we need to consider the private key as compromised and alert the user.
+
+Controls not yet implementes:
+
+  - Trusted execution enclaves (e.g. intel GSX) that validate the application and protect the key
+
+**An attacker (or a failed disk) wipes the private key**
+
+Controls not yet implemented:
+
+   - Regularly remind the user to backup the key
+   - Use secure enclaves to distribute copies of the key
+
+**Signatory is unavailable due to a DoS attack on the HTTP interface**
+
+Controls not yet implemented:
+
+   - Use Rack::Security to limit the number of requests
+   - Filter source IPs
+   - Authenticate user - mutual authentication
+
+**Transaction parameters are altered in transit between client application and signatory**
+
+Controls not yet implemented:
+
+   - Protect the access to application with HTTPS
+   - Audit log of all transactions kept and signed
+   - Verify on client that the signed transaction has not been altered, before submitting it
 
 License
 -------
 
-signatory is released as open source under an [MIT License](http://opensource.org/licenses/MIT)
+signatory is released as open source under an [MIT License](http://opensource.org/licenses/MIT), check the LICENSE.txt file for more details.

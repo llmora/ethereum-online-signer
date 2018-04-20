@@ -40,37 +40,6 @@ class EthereumSignerApp < Sinatra::Base
     @@key != nil
   end
 
-  def nonce(address)
-  
-    api_url = nil
-  
-    case settings.network
-    when 'main'
-      api_url = 'https://api.etherscan.io'
-    when 'ropsten'
-      api_url = 'https://ropsten.etherscan.io'
-    when 'kovan'
-      api_url = 'https://kovan.etherscan.io'
-    when 'rinkeby'
-      api_url = 'https://rinkeby.etherscan.io'
-    else
-      http_error("Invalid network #{network}, please check your configuration", 500)
-    end
-
-    response = RestClient::Request.execute(method: :get, url: "#{api_url}/api", payload: { module: "proxy", action: "eth_getTransactionCount", address:  address, tag: "latest", apikey: settings.etherscan_api_token}, ssl_ca_file: 'cacert.pem') { |response, request, result| response }
-
-    if response.code == 200 then
-      api_response = JSON.parse(response, :symbolize_names => true)
-
-      if api_response[:jsonrpc] == "2.0" then
-        return api_response[:result].to_i(16)
-      end
-
-    else
-      logger.error "Etherscan API returned non-200 response code for 'eth_getTransactionCount': #{response.code}"
-    end
-  end
-
   def http_error(message, status_code = 422)
      logger.error "Error #{status_code}: #{message}"
      halt status_code, { status: "error", message: [message]}.to_json
@@ -97,26 +66,58 @@ class EthereumSignerApp < Sinatra::Base
     config_error("You must specify a list of allowed destinations") if settings.destinations.length == 0
     config_error("You must specify a maximum wei transfer limit") if settings.transfer_limit_wei == 0
 
+    # R1: Ensure that key is encrypted on disk, bail otherwise
+    begin
+      @@key = Eth::Key.decrypt File.read(settings.keyfile), ""
+      raise "Key is stored unencrypted and may have been compromised. To avoid security risks you must always use an encrypted key, exiting."
+    rescue RuntimeError => e
+    end
+
     # Unlock key through console
+    
+    exception = nil
+
     loop do
       print "[signatory] Enter passphrase to unlock key '#{settings.keyfile}': "
-      STDOUT.flush
-      STDIN.noecho(&:get_passphrase)
       
+      banner_show_time = Time.now.to_f
+      
+      # R6: Trying to set noecho on a non-TTY will fail
+      STDOUT.flush
       begin
-        @@key = Eth::Key.decrypt File.read(settings.keyfile), @@key_passphrase.chomp
-      rescue Exception => e
-        puts e.message
+        STDIN.noecho(&:get_passphrase)
+      rescue  => e
+        exception = e
+        break
+      end
+      
+      # R5: Ensure the passphrase is not being fed from STDIN by requiring at least one second between the prompt being shown and the passphrase being fed in
+      password_entered_time = Time.now.to_f
+      
+      if(password_entered_time - banner_show_time > 0.5)
+        begin
+          @@key = Eth::Key.decrypt File.read(settings.keyfile), @@key_passphrase.chomp
+        rescue Exception => e
+          print "[signatory] Error unlocking key: #{e.message}\n"
+        end
+      else
+        print "[signatory] Passphrase entered too quickly, please wait at least a second after the prompt is shown\n"
       end
 
+      # R2: Remove passphrase from memory as soon as possible
       # Securely read the passphrase and wipe it after use (https://bugs.ruby-lang.org/issues/5741) - you would thing IO#getpass would do this for you
       io = StringIO.new("\0" * @@key_passphrase.bytesize)
       io.read(@@key_passphrase.bytesize, @@key_passphrase)
 
       break if @@key
     end
+    
+    if exception != nil
+      # TODO: How does rack handle initialisation errors?
+      raise exception
+    end
   end
-
+  
   before do
     content_type 'application/json'
   end
@@ -139,19 +140,19 @@ class EthereumSignerApp < Sinatra::Base
       http_error("Invalid request, missing destination") unless data.key?(:destination)
       http_error("Invalid request, missing wei") unless data.key?(:wei)
 
-      # Get destination and amount
+      # Get destination, amount and nonce
       destination = data[:destination]
       wei = data[:wei].to_i
+      nonce = data[:nonce].to_i
 
+      # R3: Transfers are only allowed to predefined target wallets
       # Check that destination is an address and is in our whitelist
       http_error("Transfers to #{destination} are not allowed") if ! settings.destinations.include? destination
 
+      # R4: There is a cap on the maximum amount of currency that can be transferred
       # Check the amount requested is not above the transfer
       http_error("Amount cannot exceed #{settings.transfer_limit_wei} wei") if wei > settings.transfer_limit_wei
 
-      # Get nonce
-      nonce = nonce(settings.source) || http_error("Error retrieving nonce", 500)
-      
       # Sign transaction
       tx = Eth::Tx.new({
         data: '',
@@ -163,6 +164,8 @@ class EthereumSignerApp < Sinatra::Base
       })
 
       tx.sign @@key
+
+      # Add transaction to the local audit log
 
       http_response({transaction: tx.hex, hash: tx.hash}, 200, "Transaction successfully signed")
     else
